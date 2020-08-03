@@ -2,41 +2,47 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"github.com/newrelic/newrelic-telemetry-sdk-go/telemetry"
 	"github.com/sirupsen/logrus"
+	"io"
 	"time"
 )
 
+//Harvester is an interface which describes a StatusEvent consumer
 type Harvester interface {
 	Harvest(ctx context.Context, src <-chan StatusEvent) error
 }
 
-type ConsoleHarvester struct {
-	logger logrus.FieldLogger
+// IOWriterHarvester implements Harvester interface and logs StatusEvents with provided Writer
+type IOWriterHarvester struct {
+	writer io.Writer
 }
 
-func (cp ConsoleHarvester) Harvest(ctx context.Context, src <-chan StatusEvent) error {
+func (h IOWriterHarvester) Harvest(ctx context.Context, src <-chan StatusEvent) error {
 	for {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
 		case e := <-src:
-			logrus.Debugf("event recorded: \"%v\"\n", e)
+			_, _ = h.writer.Write([]byte(fmt.Sprintf("event recorded: \"%v\"\n", e)))
 		}
 	}
 }
 
-type NewrelicHarvester struct {
-	metricName string
-	harvester  *telemetry.Harvester
-	logger     *logrus.Logger
-}
-
+// NewrelicHarvester is options to configure New Relic client
 type NewrelicOptions struct {
 	ApiKey          string
 	ApplicationName string
 	HostName        string
 	Environment     string
+}
+
+// NewrelicHarvester is New Relic client based implementation of Harvester
+type NewrelicHarvester struct {
+	metricName string
+	harvester  *telemetry.Harvester
+	logger     *logrus.Logger
 }
 
 func NewNewrelicHarvester(opts *NewrelicOptions, metricName string, logger *logrus.Logger) (*NewrelicHarvester, error) {

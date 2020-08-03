@@ -9,17 +9,22 @@ import (
 	"time"
 )
 
+// Collector interface describes a data-source which collects the monitoring info
+// and pushes it into a channel to be consumed by Harvester
 type Collector interface {
 	// todo: return `heartbeat` channel
 	Collect(ctx context.Context, dest chan<- StatusEvent, interval time.Duration) error
 }
 
+// FuncCollector is a wrapper which allows to use simple function as a Collector
+// May be used for testing and debugging
 type FuncCollector func(ctx context.Context, dest chan<- StatusEvent, interval time.Duration) error
 
 func (fn FuncCollector) Collect(ctx context.Context, dest chan<- StatusEvent, interval time.Duration) error {
 	return fn(ctx, dest, interval)
 }
 
+// DockerCollector is Docker client Collector interface implementation
 type DockerCollector struct {
 	client *client.Client
 }
