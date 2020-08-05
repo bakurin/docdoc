@@ -7,7 +7,6 @@ import (
 	"github.com/sirupsen/logrus"
 	"os"
 	"os/signal"
-	"sync"
 	"syscall"
 	"time"
 )
@@ -45,11 +44,23 @@ func main() {
 		cancel()
 	}()
 
-	err = run(&opts, logger, ctx)
+	collector, err := NewDockerCollector()
 	if err != nil {
-		logger.Errorf("[%v", err)
+		logger.Errorf("%v", err)
 		os.Exit(1)
 	}
+
+	harvester, err := NewNewrelicHarvester(&NewrelicOptions{
+		ApiKey:          opts.NewrelicAPIKey,
+		ApplicationName: opts.NewrelicMetricName,
+		Environment:     opts.Env,
+	}, opts.NewrelicMetricName, logger)
+	if err != nil {
+		logger.Errorf("%v", err)
+		os.Exit(1)
+	}
+
+	run(collector, harvester, ctx, opts.Interval, logger)
 }
 
 func setupLog(debug bool) *logrus.Logger {
@@ -64,47 +75,54 @@ func setupLog(debug bool) *logrus.Logger {
 	return logrus.New()
 }
 
-func run(opts *Opts, logger *logrus.Logger, ctx context.Context) error {
-	client, err := NewDockerCollector()
-	if err != nil {
-		return err
-	}
-
-	provider, err := NewNewrelicHarvester(&NewrelicOptions{
-		ApiKey:          opts.NewrelicAPIKey,
-		ApplicationName: opts.NewrelicMetricName,
-		Environment:     opts.Env,
-	}, opts.NewrelicMetricName, logger)
-	if err != nil {
-		return err
-	}
-	stream := make(chan StatusEvent)
-
-	var wg sync.WaitGroup
+func run(collector Collector, harvester Harvester, ctx context.Context, interval time.Duration, logger *logrus.Logger) {
 	c, cancel := context.WithCancel(ctx)
+	stream := make(chan StatusEvent)
+	defer close(stream)
 
-	wg.Add(1)
 	go (func() {
-		defer wg.Done()
 		defer cancel()
+		defer logger.Debugf("collector goroutine exited")
 
-		err := client.Collect(c, stream, opts.Interval)
-		if err == context.Canceled {
-			logger.Info("client cancelled")
-			return
+		updatePulse := func() <-chan time.Time {
+			return time.After(interval * 5)
 		}
 
-		if err != nil {
-			logger.Error(err)
+		runCollector := func() (<-chan struct{}, context.CancelFunc) {
+			c, cancelCollector := context.WithCancel(c)
+			return collector.Collect(c, stream, interval), cancelCollector
+		}
+
+		pulse := updatePulse()
+		heartbeat, cancelCollector := runCollector()
+
+		<-heartbeat
+
+	loop:
+		for {
+			select {
+			case x, ok := <-heartbeat:
+				if !ok {
+					logger.Debug("collector stopped")
+					return
+				}
+				logger.Debugf("%v -> %v", x, ok)
+				logger.Debug("got pulse from collector")
+				pulse = updatePulse()
+			case <-pulse:
+				logger.Warn("collector time out. restart collector")
+				cancelCollector()
+				heartbeat, cancelCollector = runCollector()
+				continue loop
+			}
 		}
 	})()
 
-	wg.Add(1)
 	go (func() {
-		defer wg.Done()
 		defer cancel()
+		defer logger.Println("harvester goroutine exited")
 
-		err := provider.Harvest(c, stream)
+		err := harvester.Harvest(c, stream)
 		if err == context.Canceled {
 			logger.Info("provider cancelled")
 			return
@@ -116,8 +134,6 @@ func run(opts *Opts, logger *logrus.Logger, ctx context.Context) error {
 	})()
 
 	logger.Println("monitoring...")
-	wg.Wait()
+	<-c.Done()
 	logger.Println("stopped")
-
-	return nil
 }

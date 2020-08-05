@@ -14,6 +14,13 @@ type Harvester interface {
 	Harvest(ctx context.Context, src <-chan StatusEvent) error
 }
 
+// FuncHarvester is Harvester implementation for testing
+type FuncHarvester func(ctx context.Context, src <-chan StatusEvent) error
+
+func (fn FuncHarvester) Harvest(ctx context.Context, src <-chan StatusEvent) error {
+	return fn(ctx, src)
+}
+
 // IOWriterHarvester implements Harvester interface and logs StatusEvents with provided Writer
 type IOWriterHarvester struct {
 	writer io.Writer
