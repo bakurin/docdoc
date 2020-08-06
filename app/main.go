@@ -42,6 +42,7 @@ func main() {
 		<-stop
 		logger.Printf("interrupt signal")
 		cancel()
+		os.Exit(0)
 	}()
 
 	collector, err := NewDockerCollector()
@@ -89,24 +90,21 @@ func run(collector Collector, harvester Harvester, ctx context.Context, interval
 		}
 
 		runCollector := func() (<-chan struct{}, context.CancelFunc) {
-			c, cancelCollector := context.WithCancel(c)
-			return collector.Collect(c, stream, interval), cancelCollector
+			cancelCtx, cancelCollector := context.WithCancel(c)
+			return collector.Collect(cancelCtx, stream, interval), cancelCollector
 		}
 
 		pulse := updatePulse()
 		heartbeat, cancelCollector := runCollector()
 
-		<-heartbeat
-
 	loop:
 		for {
 			select {
-			case x, ok := <-heartbeat:
+			case _, ok := <-heartbeat:
 				if !ok {
 					logger.Debug("collector stopped")
 					return
 				}
-				logger.Debugf("%v -> %v", x, ok)
 				logger.Debug("got pulse from collector")
 				pulse = updatePulse()
 			case <-pulse:

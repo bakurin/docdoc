@@ -2,11 +2,11 @@ package main
 
 import (
 	"context"
-	"github.com/sirupsen/logrus"
 	"io/ioutil"
 	"testing"
 	"time"
 
+	"github.com/sirupsen/logrus"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -45,7 +45,7 @@ func TestRun_CancelOnHarvesterTerminated(t *testing.T) {
 	})
 
 	harvester := FuncHarvester(func(ctx context.Context, src <-chan StatusEvent) error {
-		return nil
+		return context.Canceled
 	})
 
 	go func() {
@@ -165,5 +165,44 @@ func TestRun_PassEventFromCollectorToHarvester(t *testing.T) {
 		assert.Fail(t, "time out")
 	case <-ctx.Done():
 		assert.Equal(t, 1, counter, "exactly one event had to be collected and harvested")
+	}
+}
+
+func TestRun_RestartCollectorItHanging(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+
+	var counter int
+	collector := FuncCollector(func(ctx context.Context, dest chan<- StatusEvent, interval time.Duration) <-chan struct{} {
+		counter += 1 // count start attempt
+		heartbeat := make(chan struct{}, 1)
+
+		go func() {
+			defer close(heartbeat)
+			if counter >= 2 {
+				return
+			}
+
+			heartbeat <- struct{}{}
+			<-ctx.Done() // get stuck
+		}()
+
+		return heartbeat
+	})
+
+	harvester := FuncHarvester(func(ctx context.Context, src <-chan StatusEvent) error {
+		<-src // waite for event
+		return nil
+	})
+
+	go func() {
+		run(collector, harvester, ctx, time.Millisecond, createNullLogger())
+		cancel()
+	}()
+
+	select {
+	case <-time.After(time.Second):
+		assert.Fail(t, "time out")
+	case <-ctx.Done():
+		assert.Equal(t, 2, counter, "collector have to be restarted twice")
 	}
 }
